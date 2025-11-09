@@ -39,7 +39,7 @@ def cli():
     parser.add_argument('--weight_decay', default=0.01, type=float)
     parser.add_argument('--num_epochs', default=1000, type=int)
     parser.add_argument('--early_stopping_patience', default=30, type=int)
-    parser.add_argument('--early_stopping_min_epochs', default=500, type=int)
+    parser.add_argument('--early_stopping_min_epochs', default=1000, type=int)
 
     args = parser.parse_args()
     return args
@@ -175,6 +175,8 @@ def main():
         early_stopping.best_model if early_stopping.best_model is not None 
         else painn
     )
+    print(f'Best epoch: {early_stopping.best_epoch}')
+    print(f'Best val. MAE: {early_stopping.best_loss}')
 
     test_mae = compute_mae(painn, post_processing, test_loader, device)
     print(f'Test MAE: {unit_conversion(test_mae):.3f}')
