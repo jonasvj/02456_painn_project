@@ -8,6 +8,7 @@ import argparse
 from tqdm import trange
 import torch.nn.functional as F
 from src.data import QM9DataModule
+from src.utils import EarlyStopping
 from pytorch_lightning import seed_everything
 from src.models import PaiNN, AtomwisePostProcessing
 
@@ -37,9 +38,39 @@ def cli():
     parser.add_argument('--lr', default=5e-4, type=float)
     parser.add_argument('--weight_decay', default=0.01, type=float)
     parser.add_argument('--num_epochs', default=1000, type=int)
+    parser.add_argument('--early_stopping_patience', default=30, type=int)
+    parser.add_argument('--early_stopping_min_epochs', default=500, type=int)
 
     args = parser.parse_args()
     return args
+
+
+def compute_mae(painn, post_processing, dataloader, device):
+    """
+    Computes the mean absoulte error between PaiNN predictions and targets.
+    """
+    N = 0
+    mae = 0
+    painn.eval()
+    with torch.no_grad():
+        for batch in dataloader:
+            batch = batch.to(device)
+
+            atomic_contributions = painn(
+                atoms=batch.z,
+                atom_positions=batch.pos,
+                graph_indexes=batch.batch,
+            )
+            preds = post_processing(
+                atoms=batch.z,
+                graph_indexes=batch.batch,
+                atomic_contributions=atomic_contributions,
+            )
+            mae += F.l1_loss(preds, batch.y, reduction='sum')
+            N += len(batch.y)
+        mae /= N
+
+    return mae
 
 
 def main():
@@ -59,6 +90,12 @@ def main():
     )
     dm.prepare_data()
     dm.setup()
+
+    train_loader = dm.train_dataloader()
+    val_loader = dm.val_dataloader()
+    test_loader = dm.test_dataloader()
+
+    unit_conversion = dm.unit_conversion[args.target]
     y_mean, y_std, atom_refs = dm.get_target_stats(
         remove_atom_refs=True, divide_by_atoms=True
     )
@@ -78,18 +115,27 @@ def main():
     painn.to(device)
     post_processing.to(device)
 
+    early_stopping = EarlyStopping(
+        patience=args.early_stopping_patience,
+        min_epochs=args.early_stopping_min_epochs,
+    )
+
     optimizer = torch.optim.AdamW(
         painn.parameters(),
         lr=args.lr,
         weight_decay=args.weight_decay,
     )
+    scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
+        optimizer,
+        T_max=args.num_epochs*len(train_loader)
+    )
 
-    painn.train()
     pbar = trange(args.num_epochs)
     for epoch in pbar:
-
+        
+        painn.train()
         loss_epoch = 0.
-        for batch in dm.train_dataloader():
+        for batch in train_loader:
             batch = batch.to(device)
 
             atomic_contributions = painn(
@@ -108,32 +154,30 @@ def main():
             optimizer.zero_grad()
             loss.backward()
             optimizer.step()
+            scheduler.step()
 
             loss_epoch += loss_step.detach().item()
+
         loss_epoch /= len(dm.data_train)
-        pbar.set_postfix_str(f'Train loss: {loss_epoch:.3e}')
+        val_mae = compute_mae(painn, post_processing, val_loader, device)
 
-    mae = 0
-    painn.eval()
-    with torch.no_grad():
-        for batch in dm.test_dataloader():
-            batch = batch.to(device)
+        pbar.set_postfix_str(
+            f'Train loss: {loss_epoch:.3e}, '
+            f'Val. MAE: {unit_conversion(val_mae):.3f}'
+        )
 
-            atomic_contributions = painn(
-                atoms=batch.z,
-                atom_positions=batch.pos,
-                graph_indexes=batch.batch,
-            )
-            preds = post_processing(
-                atoms=batch.z,
-                graph_indexes=batch.batch,
-                atomic_contributions=atomic_contributions,
-            )
-            mae += F.l1_loss(preds, batch.y, reduction='sum')
-    
-    mae /= len(dm.data_test)
-    unit_conversion = dm.unit_conversion[args.target]
-    print(f'Test MAE: {unit_conversion(mae):.3f}')
+        stop = early_stopping.check(painn, val_mae, epoch)
+        if stop:
+            print(f'Early stopping after epoch {epoch}.')
+            break
+
+    painn = (
+        early_stopping.best_model if early_stopping.best_model is not None 
+        else painn
+    )
+
+    test_mae = compute_mae(painn, post_processing, test_loader, device)
+    print(f'Test MAE: {unit_conversion(test_mae):.3f}')
 
 
 if __name__ == '__main__':
