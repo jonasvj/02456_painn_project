@@ -1,0 +1,77 @@
+Project direction (English)
+---------------------------
+
+
+
+
+
+
+*-our goal -----------> So overall, once the model is trained, what I want to do is give it a molecule, and the model will output the energy and the force on each atom. Using the per-atom forces and the energy, we can compute the molecule’s next geometry. Once we have this new geometry, we feed it back into the model, it outputs new forces and energy, we compute the next shape again, and so on. Is that exactly how it works?
+
+- Goal: learn molecular potential energy surfaces for MD with an equivariant GNN (PaiNN or similar).
+- Dataset to use: MD17 (classic, energies + forces) or OMol25 (newer). QM9 is only a warm-up; it has no forces.
+- Targets: potential energy and atomic forces (forces = -∇E).
+
+Two modeling variants to compare
+- Conservative: predict energy only, take forces via autograd; guarantees energy–force consistency but slightly heavier.
+- Direct forces: add a force head and train forces directly; faster/possibly more accurate per-step, but not energy-conservative.
+
+Training recipe
+- Loss = lambda_E * MSE(energy) + lambda_F * MSE(forces_x,y,z); tune lambdas (e.g., larger weight on forces).
+- Use PaiNN with a force head (or reuse existing energy head + autograd for forces).
+- Train/val/test splits on MD17 (or OMol25), batch molecules, track MAE/MSE for energy and forces.
+
+Project directions to pick
+- Energy vs direct-force trade-off: compare errors and short MD rollouts for stability/energy drift.
+- Optional Bayesian angle: add approximate Bayesian last layer on energy (and forces) to surface uncertainty; show it flags out-of-domain simulations.
+
+Minimal plan
+1) Data loader for MD17/OMol25 (energies + forces).
+2) PaiNN energy + force head; implement conservative and direct-force variants.
+3) Joint loss on energy/forces; train and evaluate.
+4) Small MD rollouts to demonstrate stability; report errors and drift.
+5) (Optional) Bayesian layer and uncertainty calibration.
+
+*Note on forces
+- QM9 has no force labels; taking forces as -∂E/∂R from an energy-only model trained on QM9 would be unsupervised and unreliable for MD.
+- For MD, use a dataset with forces (MD17/OMol25), keep positions with requires_grad, and train with a joint energy/force loss to get meaningful forces
+- !!!!!          -> the datasets with force has (2 force properties) : 1\ one total potential energy vector for the whole geometry          : 2\One force vector per atom: a 3D vector (Fx, Fy, Fz) for each atom. Shape is [num_atoms, 3] for that molecule.  There’s no single “molecule-level average force” target. You supervise the model to match energy (scalar) and all the per-atom force vectors.
+- !!!!! so for the project, we are only using the force vector per atom, because these are the force that logicaly dictate the evolution of the molecule geometry``
+
+
+
+*MD17/OMol25 datasets
+- each frame is a different geometry of the same molecule : atome types + positions + corresponding energy + force per atome        -----------> for that corresponding geometry
+- we train 
+- the the model  learns how force vary with structure.
+
+
+
+
+
+*2 methods (we have to choose)
+-1 : on compute l'energie totale de la configuration, et en suite, on applique une formule, et ça nous donne les forces individuelles par atomes
+-2 : on predit chauqe force sur chaque atome (chôse qu'on peut faire étant donné que le dataset les contient)
+
+- je pense que c mieux de faire la methode 1
+
+
+
+
+
+
+
+
+
+*bayesian : 
+
+- est ce que le modèle est fiable ?   Ou est-ce qu’il se retrouve dans une configuration qu’il n’a jamais vue (danger)
+- donc bayesioan method nous donne à la fois l'output du modèle (énergie ou forces individuelles tout dépend de ce qu'on veut) et en plus une incertitude
+- donc si l'incetidtude reste petite, c ok, le modèle est toujours cohérent
+- si l'incertidute augemente, le modèle invete des trucs --> IL faut le modifier des paramètres de réglages du modèle
+
+
+
+run : 
+
+python /Users/timotheegadret/Desktop/DTU/s1/deep_learning/02456_painn_project/minimal_example.py --subset_size 2000 --splits 1600 200 200 --num_epochs 10 --early_stopping_min_epochs 5 --early_stopping_patience 3 --batch_size_train 256 --num_workers 0
