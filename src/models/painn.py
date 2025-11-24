@@ -5,6 +5,74 @@ from typing import Union, Tuple
 from torch_geometric.nn import radius_graph
 
 
+class BayesianLinear(nn.Module):
+    """
+    Bayesian Linear Layer with Reparameterization Trick.
+    """
+    def __init__(self, in_features: int, out_features: int):
+        super().__init__()
+        self.in_features = in_features
+        self.out_features = out_features
+
+        # Weight parameters
+        self.weight_mu = nn.Parameter(torch.Tensor(out_features, in_features))
+        self.weight_rho = nn.Parameter(torch.Tensor(out_features, in_features))
+
+        # Bias parameters
+        self.bias_mu = nn.Parameter(torch.Tensor(out_features))
+        self.bias_rho = nn.Parameter(torch.Tensor(out_features))
+
+        self.reset_parameters()
+
+        # KL divergence for this layer (calculated in forward)
+        self.kl_div = 0.0
+
+    def reset_parameters(self):
+        # Initialize mu like standard linear layer
+        nn.init.kaiming_uniform_(self.weight_mu, a=math.sqrt(5))
+        fan_in, _ = nn.init._calculate_fan_in_and_fan_out(self.weight_mu)
+        bound = 1 / math.sqrt(fan_in) if fan_in > 0 else 0
+        nn.init.uniform_(self.bias_mu, -bound, bound)
+
+        # Initialize rho to give small initial variance (sigma = log(1+exp(rho)))
+        # rho = -3 => sigma ~= 0.05
+        nn.init.constant_(self.weight_rho, -3.0)
+        nn.init.constant_(self.bias_rho, -3.0)
+
+    def forward(self, input: torch.Tensor) -> torch.Tensor:
+        # 1. Compute sigma = log(1 + exp(rho))
+        weight_sigma = torch.log1p(torch.exp(self.weight_rho))
+        bias_sigma = torch.log1p(torch.exp(self.bias_rho))
+
+        # 2. Sample epsilon ~ N(0, 1)
+        weight_epsilon = torch.randn_like(self.weight_mu)
+        bias_epsilon = torch.randn_like(self.bias_mu)
+
+        # 3. Reparameterize: w = mu + sigma * epsilon
+        weight = self.weight_mu + weight_sigma * weight_epsilon
+        bias = self.bias_mu + bias_sigma * bias_epsilon
+
+        # 4. Compute output
+        output = nn.functional.linear(input, weight, bias)
+
+        # 5. Compute KL Divergence (Analytical: Gaussian q(w) || Gaussian p(w)=N(0,1))
+        # KL = 0.5 * sum(sigma^2 + mu^2 - 1 - log(sigma^2))
+        # Note: We sum over all weights and biases in this layer
+        
+        # Weight KL
+        kl_weight = 0.5 * torch.sum(
+            weight_sigma**2 + self.weight_mu**2 - 1 - torch.log(weight_sigma**2 + 1e-8)
+        )
+        # Bias KL
+        kl_bias = 0.5 * torch.sum(
+            bias_sigma**2 + self.bias_mu**2 - 1 - torch.log(bias_sigma**2 + 1e-8)
+        )
+        
+        self.kl_div = kl_weight + kl_bias
+
+        return output
+
+
 def build_readout_network(
     num_in_features: int,
     num_out_features: int = 1,
@@ -12,7 +80,7 @@ def build_readout_network(
     activation: nn.Module = nn.SiLU
 ):
     """
-    Build readout network.
+    Build readout network using Bayesian Linear layers.
 
     Args:
         num_in_features: Number of input features.
@@ -36,7 +104,7 @@ def build_readout_network(
     # Build network
     readout_network = nn.Sequential()
     for i, (n_in, n_out) in enumerate(zip(num_neurons[:-1], num_neurons[1:])):
-        readout_network.append(nn.Linear(n_in, n_out))
+        readout_network.append(BayesianLinear(n_in, n_out))
         if i < num_layers - 1:
             readout_network.append(activation())
 
@@ -354,6 +422,18 @@ class PaiNN(nn.Module):
             num_layers=2,
             activation=nn.SiLU
         )
+
+
+    @property
+    def kl_divergence(self):
+        """
+        Computes the KL divergence of the model (sum of KL of all Bayesian layers).
+        """
+        kl = 0.0
+        for layer in self.readout_network:
+            if isinstance(layer, BayesianLinear):
+                kl += layer.kl_div
+        return kl
 
 
     def forward(
