@@ -1,0 +1,23 @@
+            ___________1. cahngement de dataset : qm9 --> md17
+
+- donc là, on entraine le modèle à sortir l'nergie totale de la molécule, (on a plein de configurations différentes de la molécule, sur chaqunes, on a des infos de l'energie)
+
+            ___________2. bayesian layer
+
+- idée : 
+        - dans un modèle nonbayesien, on essaye d'apprendre LA MEILLEURE VALEURE pour les poids du réseau
+        - dans un modèle bayesien, on essaye d'apprendre LA DISTRIBUTION des poids du réseau --> on veut donc apprendre la meilleure distribution pour chaque poids
+            - donc on veut apprendre les paramètres de la distribution des poids (mu et sigma) (distribution gaussienne normale, comme en proba stat de con)
+        - en gros, un BNN permet de quantifier l'incertitude sur les prédictions, donc on voit si la molécule va dans une positionq u'on a jamais vu dans le dataset
+            - parce que l'output (energie) viendra avec une incertitude
+
+implémentation : 
+
+        -   **Remplacer la dernière couche du modèle par une couche bayésienne** : Utiliser une couche où les poids et biais sont des distributions (par exemple, `tfp.layers.DenseVariational` si utilisant TensorFlow Probability, ou implémenter une couche personnalisée).
+        -   **Adapter la fonction de perte (loss function)** : Inclure un terme de divergence KL (Kullback-Leibler) pour régulariser les distributions des poids, en plus de la perte de prédiction (par exemple, MSE).
+        -   **Modifier le processus d'inférence (prédiction)** : Au lieu d'une seule passe avant, effectuer plusieurs passes stochastiques pour échantillonner les poids et obtenir une distribution de prédictions.
+        -   **Interpréter les sorties du modèle** : Les prédictions ne seront plus des valeurs uniques mais des distributions (moyenne et variance/écart-type) pour quantifier l'incertitude.
+
+
+
+
